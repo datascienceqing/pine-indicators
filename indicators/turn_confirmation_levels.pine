@@ -69,14 +69,17 @@ var label[] labels = array.new_label()
 var table t = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 85))
 
 f_clear_drawings() =>
-    for i = 0 to array.size(lines) - 1
-        line.delete(array.get(lines, i))
+    if array.size(lines) > 0
+        for i = 0 to array.size(lines) - 1
+            line.delete(array.get(lines, i))
     array.clear(lines)
-    for i = 0 to array.size(boxes) - 1
-        box.delete(array.get(boxes, i))
+    if array.size(boxes) > 0
+        for i = 0 to array.size(boxes) - 1
+            box.delete(array.get(boxes, i))
     array.clear(boxes)
-    for i = 0 to array.size(labels) - 1
-        label.delete(array.get(labels, i))
+    if array.size(labels) > 0
+        for i = 0 to array.size(labels) - 1
+            label.delete(array.get(labels, i))
     array.clear(labels)
 
 f_add_level(float[] arr, float v) =>
@@ -141,20 +144,21 @@ if array.size(sorted) > 0
     float curTop = array.get(sorted, 0)
     int curCount = 1
     float prev = array.get(sorted, 0)
-    for i = 1 to array.size(sorted) - 1
-        lv = array.get(sorted, i)
-        if lv - prev <= tol
-            curTop := math.max(curTop, lv)
-            curBot := math.min(curBot, lv)
-            curCount += 1
-        else
-            array.push(clusterTopArr, curTop)
-            array.push(clusterBotArr, curBot)
-            array.push(clusterCountArr, curCount)
-            curBot := lv
-            curTop := lv
-            curCount := 1
-        prev := lv
+    if array.size(sorted) > 1
+        for i = 1 to array.size(sorted) - 1
+            lv = array.get(sorted, i)
+            if lv - prev <= tol
+                curTop := math.max(curTop, lv)
+                curBot := math.min(curBot, lv)
+                curCount += 1
+            else
+                array.push(clusterTopArr, curTop)
+                array.push(clusterBotArr, curBot)
+                array.push(clusterCountArr, curCount)
+                curBot := lv
+                curTop := lv
+                curCount := 1
+            prev := lv
     array.push(clusterTopArr, curTop)
     array.push(clusterBotArr, curBot)
     array.push(clusterCountArr, curCount)
@@ -167,22 +171,23 @@ float secondaryTop = na
 float secondaryBot = na
 int secondaryCount = na
 
-for i = 0 to array.size(clusterTopArr) - 1
-    topV = array.get(clusterTopArr, i)
-    botV = array.get(clusterBotArr, i)
-    cntV = array.get(clusterCountArr, i)
-    if topV > close
-        if na(primaryCount) or cntV > primaryCount or (cntV == primaryCount and topV < primaryTop)
-            secondaryTop := primaryTop
-            secondaryBot := primaryBot
-            secondaryCount := primaryCount
-            primaryTop := topV
-            primaryBot := botV
-            primaryCount := cntV
-        else if na(secondaryCount) or cntV > secondaryCount or (cntV == secondaryCount and topV < secondaryTop)
-            secondaryTop := topV
-            secondaryBot := botV
-            secondaryCount := cntV
+if array.size(clusterTopArr) > 0
+    for i = 0 to array.size(clusterTopArr) - 1
+        topV = array.get(clusterTopArr, i)
+        botV = array.get(clusterBotArr, i)
+        cntV = array.get(clusterCountArr, i)
+        if topV > close
+            if na(primaryCount) or cntV > primaryCount or (cntV == primaryCount and topV < primaryTop)
+                secondaryTop := primaryTop
+                secondaryBot := primaryBot
+                secondaryCount := primaryCount
+                primaryTop := topV
+                primaryBot := botV
+                primaryCount := cntV
+            else if na(secondaryCount) or cntV > secondaryCount or (cntV == secondaryCount and topV < secondaryTop)
+                secondaryTop := topV
+                secondaryBot := botV
+                secondaryCount := cntV
 
 triggerPrice = primaryTop
 secondaryPrice = secondaryTop
