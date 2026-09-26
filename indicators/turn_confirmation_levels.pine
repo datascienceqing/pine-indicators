@@ -18,7 +18,8 @@ showSecondary = input.bool(true, "Show secondary trigger", group=grpDisplay)
 showTable = input.bool(true, "Show info table", group=grpDisplay)
 clusterTolPct = input.float(0.75, "Cluster tolerance (%)", minval=0.05, step=0.05, group=grpCluster)
 showPivots = input.bool(true, "Include pivot highs/lows", group=grpCluster)
-pivotCount = input.int(10, "Pivot count", minval=1, maxval=50, group=grpCluster)
+pivotCount = input.int(50, "Max pivots retained", minval=1, maxval=200, group=grpCluster, tooltip="Safety cap only. Age is the primary filter.")
+pivotMaxAge = input.int(250, "Pivot max age (bars)", minval=10, maxval=5000, group=grpCluster, tooltip="Pivots older than this many bars are dropped, matching the Lookback window used for the fibs and swing extremes.")
 minTrigPct = input.float(0.0, "Minimum trigger distance (%)", minval=0.0, step=0.1, group=grpCluster)
 volLen = input.int(10, "Volume average length", minval=1, group=grpVolume)
 volMult = input.float(1.5, "Volume multiplier", minval=1.0, step=0.1, group=grpVolume)
@@ -71,20 +72,49 @@ var line[] lines = array.new_line()
 var box[] boxes = array.new_box()
 var label[] labels = array.new_label()
 var float[] pivotHighs = array.new_float()
+var int[] pivotHighBars = array.new_int()
 var float[] pivotLows = array.new_float()
+var int[] pivotLowBars = array.new_int()
 // Near-opaque so the white cell text stays legible on a light chart. At 85
 // transparency this rendered as pale grey behind white text.
 var table t = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 8), border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 50))
 
-// Rolling window of the most recent pivots, used as candidate levels
+// Retain pivots by age, not by count. Evicting the oldest once a fixed number
+// have accumulated drops a structurally important old high as soon as enough
+// minor ones form, which is the wrong criterion for support and resistance: a
+// swing high does not stop mattering because later swings happened. Age is the
+// primary filter; the count is only a cap against unbounded growth.
+//
+// Both arrays are appended in chronological order, so the oldest entry is
+// always at index 0 and pruning is a shift from the front.
+f_prune(float[] vals, int[] bars, int maxAge, int cap) =>
+    // The size check is a separate nested if rather than an `and` in the loop
+    // condition, so this never depends on short-circuit evaluation to avoid
+    // reading index 0 of an empty array.
+    keepGoing = true
+    while keepGoing
+        keepGoing := false
+        if array.size(bars) > 0
+            if bar_index - array.get(bars, 0) > maxAge
+                array.shift(bars)
+                array.shift(vals)
+                keepGoing := true
+    while array.size(bars) > cap
+        array.shift(bars)
+        array.shift(vals)
+
+// ta.pivothigh confirms pivotRight bars after the pivot itself, so the bar the
+// pivot actually sits on is bar_index - pivotRight.
 if not na(ph)
     array.push(pivotHighs, ph)
-    if array.size(pivotHighs) > pivotCount
-        array.shift(pivotHighs)
+    array.push(pivotHighBars, bar_index - pivotRight)
 if not na(pl)
     array.push(pivotLows, pl)
-    if array.size(pivotLows) > pivotCount
-        array.shift(pivotLows)
+    array.push(pivotLowBars, bar_index - pivotRight)
+
+// Runs every bar, not only when a pivot forms, so stale pivots age out.
+f_prune(pivotHighs, pivotHighBars, pivotMaxAge, pivotCount)
+f_prune(pivotLows, pivotLowBars, pivotMaxAge, pivotCount)
 
 f_clear_drawings() =>
     if array.size(lines) > 0
@@ -134,7 +164,7 @@ f_add_level(candidates, sma50)
 f_add_level(candidates, sma100)
 f_add_level(candidates, sma200)
 
-// Recent pivots, newest pivotCount of each, plus the swing extremes
+// Pivots inside the age window, plus the swing extremes
 if showPivots
     if array.size(pivotHighs) > 0
         for i = 0 to array.size(pivotHighs) - 1
