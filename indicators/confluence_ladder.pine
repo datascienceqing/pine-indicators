@@ -69,7 +69,8 @@ var line[] lines = array.new_line()
 var label[] labels = array.new_label()
 var float[] pivotHighs = array.new_float()
 var float[] pivotLows = array.new_float()
-var table t = table.new(position.top_right, 3, 21, bgcolor=color.new(color.black, 85))
+// Near-opaque so the white cell text stays legible on a light chart.
+var table t = table.new(position.top_right, 3, 21, bgcolor=color.new(color.black, 8), border_width=1, border_color=color.new(color.gray, 70), frame_width=1, frame_color=color.new(color.gray, 50))
 
 // Rolling window of the most recent pivots, used as candidate levels
 if not na(ph)
