@@ -21,6 +21,19 @@ Filter, Display, and Colors.
 firing once per confirmed bar close with ticker, trigger price, confluence
 count, and volume ratio.
 
+### Confluence Ladder (`indicators/confluence_ladder.pine`)
+
+Companion to the above, answering a different question. It does no banding at
+all: it lists every distinct level above the close in ascending order and
+reports the cumulative count of levels a move would clear on the way to each
+one. The highlighted trigger is the highest rung inside a configurable distance
+budget, so it clears the most levels available within that range.
+
+The two scripts can legitimately disagree. Turn Confirmation Levels optimises
+for the densest band; this one makes the distance-versus-levels-cleared
+trade-off visible and leaves the choice to you. Neither output is a
+recommendation.
+
 ## Usage
 
 Open TradingView → Pine Editor → paste the file contents → *Add to chart*.
