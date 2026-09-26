@@ -6,7 +6,6 @@ indicator("Turn Confirmation Levels", overlay=true, max_lines_count=200, max_lab
 // Inputs
 // ─────────────────────────────────────────────────────────────────────────────
 string grpLeg = "Leg / Fib"
-string grpMA = "Moving Averages"
 string grpCluster = "Cluster / Trigger"
 string grpVolume = "Volume Filter"
 string grpDisplay = "Display"
@@ -87,12 +86,6 @@ f_add_level(float[] arr, float v) =>
 f_fmt(float v) =>
     str.tostring(v, format.mintick)
 
-f_cluster_top(float v1, float v2) =>
-    math.max(v1, v2)
-
-f_cluster_bottom(float v1, float v2) =>
-    math.min(v1, v2)
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Candidate levels
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,12 +125,10 @@ f_add_level(candidates, lo)
 // ─────────────────────────────────────────────────────────────────────────────
 var float[] clusterTopArr = array.new_float()
 var float[] clusterBotArr = array.new_float()
-var float[] clusterMidArr = array.new_float()
 var int[] clusterCountArr = array.new_int()
 
 array.clear(clusterTopArr)
 array.clear(clusterBotArr)
-array.clear(clusterMidArr)
 array.clear(clusterCountArr)
 
 sorted = array.copy(candidates)
@@ -159,7 +150,6 @@ if array.size(sorted) > 0
         else
             array.push(clusterTopArr, curTop)
             array.push(clusterBotArr, curBot)
-            array.push(clusterMidArr, (curTop + curBot) / 2.0)
             array.push(clusterCountArr, curCount)
             curBot := lv
             curTop := lv
@@ -167,38 +157,31 @@ if array.size(sorted) > 0
         prev := lv
     array.push(clusterTopArr, curTop)
     array.push(clusterBotArr, curBot)
-    array.push(clusterMidArr, (curTop + curBot) / 2.0)
     array.push(clusterCountArr, curCount)
 
 // Pick primary/secondary clusters above price
 float primaryTop = na
 float primaryBot = na
-float primaryMid = na
 int primaryCount = na
 float secondaryTop = na
 float secondaryBot = na
-float secondaryMid = na
 int secondaryCount = na
 
 for i = 0 to array.size(clusterTopArr) - 1
     topV = array.get(clusterTopArr, i)
     botV = array.get(clusterBotArr, i)
-    midV = array.get(clusterMidArr, i)
     cntV = array.get(clusterCountArr, i)
     if topV > close
         if na(primaryCount) or cntV > primaryCount or (cntV == primaryCount and topV < primaryTop)
             secondaryTop := primaryTop
             secondaryBot := primaryBot
-            secondaryMid := primaryMid
             secondaryCount := primaryCount
             primaryTop := topV
             primaryBot := botV
-            primaryMid := midV
             primaryCount := cntV
         else if na(secondaryCount) or cntV > secondaryCount or (cntV == secondaryCount and topV < secondaryTop)
             secondaryTop := topV
             secondaryBot := botV
-            secondaryMid := midV
             secondaryCount := cntV
 
 triggerPrice = primaryTop
