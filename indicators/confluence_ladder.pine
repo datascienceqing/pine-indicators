@@ -54,8 +54,11 @@ volAvg = ta.sma(volume, volLen)
 volRatio = volAvg > 0 ? volume / volAvg : na
 volumeConfirmed = volume >= volAvg * volMult
 
-pivotLeft = 5
-pivotRight = 5
+// Bars required either side for a swing to count as a pivot. Larger values
+// find only major swings; lower ones also mark minor lower-highs of the kind
+// structural analysis calls a BOS or LH.
+pivotLeft = input.int(5, "Pivot left bars", minval=1, maxval=25, group=grpCluster)
+pivotRight = input.int(5, "Pivot right bars", minval=1, maxval=25, group=grpCluster)
 ph = ta.pivothigh(high, pivotLeft, pivotRight)
 pl = ta.pivotlow(low, pivotLeft, pivotRight)
 
