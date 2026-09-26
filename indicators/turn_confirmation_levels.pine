@@ -1,0 +1,292 @@
+// strategy_archetype: first_principles
+//@version=6
+indicator("Turn Confirmation Levels", overlay=true, max_lines_count=200, max_labels_count=200, max_boxes_count=50)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+string grpLeg = "Leg / Fib"
+string grpMA = "Moving Averages"
+string grpCluster = "Cluster / Trigger"
+string grpVolume = "Volume Filter"
+string grpDisplay = "Display"
+string grpColors = "Colors"
+
+lookback = input.int(250, "Lookback", minval=20, group=grpLeg)
+showFibs = input.bool(true, "Show Fibonacci levels", group=grpDisplay)
+showMAs = input.bool(true, "Show moving averages", group=grpDisplay)
+showSecondary = input.bool(true, "Show secondary trigger", group=grpDisplay)
+showTable = input.bool(true, "Show info table", group=grpDisplay)
+clusterTolPct = input.float(0.75, "Cluster tolerance (%)", minval=0.05, step=0.05, group=grpCluster)
+showPivots = input.bool(true, "Include pivot highs/lows", group=grpCluster)
+volLen = input.int(10, "Volume average length", minval=1, group=grpVolume)
+volMult = input.float(1.5, "Volume multiplier", minval=1.0, step=0.1, group=grpVolume)
+strongVolMult = input.float(2.0, "Strong volume multiplier", minval=1.0, step=0.1, group=grpVolume)
+
+cFib = input.color(color.new(color.silver, 55), "Fib", group=grpColors)
+cMA = input.color(color.new(color.teal, 0), "MAs", group=grpColors)
+cTrigger = input.color(color.new(color.orange, 0), "Primary trigger", group=grpColors)
+cSecondary = input.color(color.new(color.gray, 30), "Secondary trigger", group=grpColors)
+cInv = input.color(color.new(color.red, 0), "Invalidation", group=grpColors)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core series
+// ─────────────────────────────────────────────────────────────────────────────
+hi = ta.highest(high, lookback)
+lo = ta.lowest(low, lookback)
+swingRange = hi - lo
+
+ema10 = ta.ema(close, 10)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+sma50 = ta.sma(close, 50)
+sma100 = ta.sma(close, 100)
+sma200 = ta.sma(close, 200)
+
+volAvg = ta.sma(volume, volLen)
+volRatio = volAvg > 0 ? volume / volAvg : na
+volumeConfirmed = volume >= volAvg * volMult
+strongVolume = volume >= volAvg * strongVolMult
+
+// Bar-close breakout logic: close is evaluated on the bar's final value, so the
+// signal is naturally close-based rather than intra-bar.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pivot detection for invalidation and candidate levels
+// ─────────────────────────────────────────────────────────────────────────────
+pivotLeft = 5
+pivotRight = 5
+ph = ta.pivothigh(high, pivotLeft, pivotRight)
+pl = ta.pivotlow(low, pivotLeft, pivotRight)
+lastPivotHigh = ta.valuewhen(not na(ph), ph, 0)
+lastPivotLow = ta.valuewhen(not na(pl), pl, 0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Arrays and helpers
+// ─────────────────────────────────────────────────────────────────────────────
+var line[] lines = array.new_line()
+var box[] boxes = array.new_box()
+var label[] labels = array.new_label()
+var table t = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 85))
+
+f_clear_drawings() =>
+    for i = 0 to array.size(lines) - 1
+        line.delete(array.get(lines, i))
+    array.clear(lines)
+    for i = 0 to array.size(boxes) - 1
+        box.delete(array.get(boxes, i))
+    array.clear(boxes)
+    for i = 0 to array.size(labels) - 1
+        label.delete(array.get(labels, i))
+    array.clear(labels)
+
+f_add_level(float[] arr, float v) =>
+    if not na(v)
+        array.push(arr, v)
+
+f_fmt(float v) =>
+    str.tostring(v, format.mintick)
+
+f_cluster_top(float v1, float v2) =>
+    math.max(v1, v2)
+
+f_cluster_bottom(float v1, float v2) =>
+    math.min(v1, v2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Candidate levels
+// ─────────────────────────────────────────────────────────────────────────────
+var float[] candidates = array.new_float()
+array.clear(candidates)
+
+// Fib retracements from dominant swing leg
+fib236 = lo + swingRange * 0.236
+fib382 = lo + swingRange * 0.382
+fib50  = lo + swingRange * 0.5
+fib618 = lo + swingRange * 0.618
+fib786 = lo + swingRange * 0.786
+
+f_add_level(candidates, fib236)
+f_add_level(candidates, fib382)
+f_add_level(candidates, fib50)
+f_add_level(candidates, fib618)
+f_add_level(candidates, fib786)
+
+// MAs
+f_add_level(candidates, ema10)
+f_add_level(candidates, ema20)
+f_add_level(candidates, ema50)
+f_add_level(candidates, sma50)
+f_add_level(candidates, sma100)
+f_add_level(candidates, sma200)
+
+// Prior swing high and pivots
+if showPivots
+    f_add_level(candidates, lastPivotHigh)
+    f_add_level(candidates, lastPivotLow)
+f_add_level(candidates, hi)
+f_add_level(candidates, lo)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cluster building
+// ─────────────────────────────────────────────────────────────────────────────
+var float[] clusterTopArr = array.new_float()
+var float[] clusterBotArr = array.new_float()
+var float[] clusterMidArr = array.new_float()
+var int[] clusterCountArr = array.new_int()
+
+array.clear(clusterTopArr)
+array.clear(clusterBotArr)
+array.clear(clusterMidArr)
+array.clear(clusterCountArr)
+
+sorted = array.copy(candidates)
+array.sort(sorted, order.ascending)
+
+tol = close * clusterTolPct / 100.0
+
+if array.size(sorted) > 0
+    float curBot = array.get(sorted, 0)
+    float curTop = array.get(sorted, 0)
+    int curCount = 1
+    float prev = array.get(sorted, 0)
+    for i = 1 to array.size(sorted) - 1
+        lv = array.get(sorted, i)
+        if lv - prev <= tol
+            curTop := math.max(curTop, lv)
+            curBot := math.min(curBot, lv)
+            curCount += 1
+        else
+            array.push(clusterTopArr, curTop)
+            array.push(clusterBotArr, curBot)
+            array.push(clusterMidArr, (curTop + curBot) / 2.0)
+            array.push(clusterCountArr, curCount)
+            curBot := lv
+            curTop := lv
+            curCount := 1
+        prev := lv
+    array.push(clusterTopArr, curTop)
+    array.push(clusterBotArr, curBot)
+    array.push(clusterMidArr, (curTop + curBot) / 2.0)
+    array.push(clusterCountArr, curCount)
+
+// Pick primary/secondary clusters above price
+float primaryTop = na
+float primaryBot = na
+float primaryMid = na
+int primaryCount = na
+float secondaryTop = na
+float secondaryBot = na
+float secondaryMid = na
+int secondaryCount = na
+
+for i = 0 to array.size(clusterTopArr) - 1
+    topV = array.get(clusterTopArr, i)
+    botV = array.get(clusterBotArr, i)
+    midV = array.get(clusterMidArr, i)
+    cntV = array.get(clusterCountArr, i)
+    if topV > close
+        if na(primaryCount) or cntV > primaryCount or (cntV == primaryCount and topV < primaryTop)
+            secondaryTop := primaryTop
+            secondaryBot := primaryBot
+            secondaryMid := primaryMid
+            secondaryCount := primaryCount
+            primaryTop := topV
+            primaryBot := botV
+            primaryMid := midV
+            primaryCount := cntV
+        else if na(secondaryCount) or cntV > secondaryCount or (cntV == secondaryCount and topV < secondaryTop)
+            secondaryTop := topV
+            secondaryBot := botV
+            secondaryMid := midV
+            secondaryCount := cntV
+
+triggerPrice = primaryTop
+secondaryPrice = secondaryTop
+confluenceCount = primaryCount
+secondaryConfluence = secondaryCount
+
+// Breakout condition, evaluated at bar close.
+confirmedBreak = not na(triggerPrice) and close > triggerPrice and close[1] <= triggerPrice and volumeConfirmed
+
+// Highlight every bar that confirms a breakout. barcolor() is only permitted at
+// the top level of the script, so the condition lives in the argument.
+barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alerts
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(confirmedBreak, title="Volume-confirmed close breakout", message="Turn Confirmation Levels: volume-confirmed close breakout")
+
+if confirmedBreak and barstate.isconfirmed
+    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(triggerPrice), str.tostring(confluenceCount), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drawing
+// ─────────────────────────────────────────────────────────────────────────────
+if barstate.islast
+    f_clear_drawings()
+
+    // Fibs
+    if showFibs and swingRange > 0
+        fibVals = array.from(fib236, fib382, fib50, fib618, fib786)
+        fibNames = array.from("0.236", "0.382", "0.500", "0.618", "0.786")
+        for i = 0 to array.size(fibVals) - 1
+            y = array.get(fibVals, i)
+            ln = line.new(bar_index - lookback, y, bar_index, y, extend=extend.right, color=cFib, width=1, style=line.style_dotted)
+            array.push(lines, ln)
+            lb = label.new(bar_index, y, "Fib " + array.get(fibNames, i) + "  " + f_fmt(y), style=label.style_label_left, textcolor=color.new(color.white, 0), color=color.new(color.black, 100), size=size.tiny)
+            array.push(labels, lb)
+
+    // MAs
+    if showMAs
+        maVals = array.from(ema10, ema20, ema50, sma50, sma100, sma200)
+        maNames = array.from("EMA10", "EMA20", "EMA50", "SMA50", "SMA100", "SMA200")
+        for i = 0 to array.size(maVals) - 1
+            y = array.get(maVals, i)
+            ln = line.new(bar_index - lookback, y, bar_index, y, extend=extend.right, color=color.new(cMA, 35), width=1)
+            array.push(lines, ln)
+            lb = label.new(bar_index, y, array.get(maNames, i) + "  " + f_fmt(y), style=label.style_label_left, textcolor=color.new(color.white, 0), color=color.new(color.black, 100), size=size.tiny)
+            array.push(labels, lb)
+
+    // Primary trigger cluster
+    if not na(primaryTop)
+        bx = box.new(left=bar_index - lookback, top=primaryTop, right=bar_index, bottom=primaryBot, bgcolor=color.new(cTrigger, 85), border_color=color.new(cTrigger, 35))
+        array.push(boxes, bx)
+        ln = line.new(bar_index - lookback, primaryTop, bar_index, primaryTop, extend=extend.right, color=cTrigger, width=2)
+        array.push(lines, ln)
+        lb = label.new(bar_index, primaryTop, "TRIGGER " + str.tostring(primaryCount) + "x  @ " + f_fmt(triggerPrice), style=label.style_label_left, textcolor=color.white, color=cTrigger, size=size.small)
+        array.push(labels, lb)
+
+    // Secondary trigger cluster
+    if showSecondary and not na(secondaryTop)
+        bx2 = box.new(left=bar_index - lookback, top=secondaryTop, right=bar_index, bottom=secondaryBot, bgcolor=color.new(cSecondary, 92), border_color=color.new(cSecondary, 65))
+        array.push(boxes, bx2)
+        ln2 = line.new(bar_index - lookback, secondaryTop, bar_index, secondaryTop, extend=extend.right, color=color.new(cSecondary, 35), width=1, style=line.style_dashed)
+        array.push(lines, ln2)
+        lb2 = label.new(bar_index, secondaryTop, "secondary / lower probability  " + str.tostring(secondaryConfluence) + "x  @ " + f_fmt(secondaryPrice), style=label.style_label_left, textcolor=color.white, color=color.new(color.black, 0), size=size.tiny)
+        array.push(labels, lb2)
+
+    // Invalidation level
+    if not na(lastPivotLow)
+        ln3 = line.new(bar_index - lookback, lastPivotLow, bar_index, lastPivotLow, extend=extend.right, color=cInv, width=1, style=line.style_dashed)
+        array.push(lines, ln3)
+        lb3 = label.new(bar_index, lastPivotLow, "invalidation  " + f_fmt(lastPivotLow), style=label.style_label_left, textcolor=color.white, color=color.new(cInv, 0), size=size.tiny)
+        array.push(labels, lb3)
+
+    // Info table
+    if showTable
+        table.cell(t, 0, 0, "Primary trigger", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 0, na(primaryTop) ? "n/a" : f_fmt(primaryTop), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 0, 1, "Confluence count", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 1, na(primaryCount) ? "n/a" : str.tostring(primaryCount), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 0, 2, "Secondary trigger", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 2, na(secondaryTop) ? "n/a" : f_fmt(secondaryTop), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 0, 3, "Invalidation", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 3, na(lastPivotLow) ? "n/a" : f_fmt(lastPivotLow), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 0, 4, "Vol vs 1.5x", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 4, na(volRatio) ? "n/a" : str.tostring(volRatio, format.mintick) + "x", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 0, 5, "Last bar break", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 5, confirmedBreak ? "YES" : "no", text_color=confirmedBreak ? color.lime : color.white, text_size=size.tiny)
+        table.cell(t, 0, 6, "Strong vol", text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 6, strongVolume ? "YES" : "no", text_color=strongVolume ? color.lime : color.white, text_size=size.tiny)
