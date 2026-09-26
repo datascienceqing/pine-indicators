@@ -19,6 +19,7 @@ showTable = input.bool(true, "Show info table", group=grpDisplay)
 clusterTolPct = input.float(0.75, "Cluster tolerance (%)", minval=0.05, step=0.05, group=grpCluster)
 showPivots = input.bool(true, "Include pivot highs/lows", group=grpCluster)
 pivotCount = input.int(10, "Pivot count", minval=1, maxval=50, group=grpCluster)
+minTrigPct = input.float(0.0, "Minimum trigger distance (%)", minval=0.0, step=0.1, group=grpCluster)
 volLen = input.int(10, "Volume average length", minval=1, group=grpVolume)
 volMult = input.float(1.5, "Volume multiplier", minval=1.0, step=0.1, group=grpVolume)
 strongVolMult = input.float(2.0, "Strong volume multiplier", minval=1.0, step=0.1, group=grpVolume)
@@ -151,7 +152,18 @@ array.clear(clusterTopArr)
 array.clear(clusterBotArr)
 array.clear(clusterCountArr)
 
-sorted = array.copy(candidates)
+// Only levels above the close are resistance. Filtering here, rather than
+// rejecting straddling bands later, means every cluster is above price by
+// construction and a confluence count is exactly a count of resistance
+// levels. A band with levels on both sides survives as its above-price part
+// instead of being discarded whole.
+var float[] sorted = array.new_float()
+array.clear(sorted)
+if array.size(candidates) > 0
+    for i = 0 to array.size(candidates) - 1
+        v = array.get(candidates, i)
+        if v > close
+            array.push(sorted, v)
 array.sort(sorted, order.ascending)
 
 tol = close * clusterTolPct / 100.0
@@ -193,10 +205,10 @@ if array.size(clusterTopArr) > 0
         topV = array.get(clusterTopArr, i)
         botV = array.get(clusterBotArr, i)
         cntV = array.get(clusterCountArr, i)
-        // Require the entire band above price. Testing only topV admitted
-        // bands straddling the close, whose confluence count then included
-        // levels below price that are support, not resistance.
-        if botV > close
+        // Every band is already above the close, so this is the optional
+        // minimum-distance gate. At the default of 0% it reduces to
+        // botV > close and admits every band.
+        if botV >= close * (1.0 + minTrigPct / 100.0)
             if na(primaryCount) or cntV > primaryCount or (cntV == primaryCount and topV < primaryTop)
                 secondaryTop := primaryTop
                 secondaryBot := primaryBot
