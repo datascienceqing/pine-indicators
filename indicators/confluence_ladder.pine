@@ -260,7 +260,16 @@ var int prevCleared = na
 breakRef = held ? lockTrig : prevTrigger
 breakCleared = held ? lockCleared : prevCleared
 
-confirmedBreak = not na(breakRef) and close > breakRef and volumeConfirmed
+// A latched level is fixed, so without this guard every later bar above it
+// re-fires: on NVDA a single 2009 latch produced 133 firings. Unlatched, the
+// trigger re-floats above price after a break and the repeat cannot happen, so
+// lockBroken is never written and this reduces to the plain condition.
+var bool lockBroken = false
+
+confirmedBreak = not na(breakRef) and close > breakRef and volumeConfirmed and not lockBroken
+
+if confirmedBreak and held
+    lockBroken := true
 
 barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 
