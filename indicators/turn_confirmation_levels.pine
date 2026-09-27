@@ -28,12 +28,13 @@ lookback = input.int(250, "Lookback", minval=20, group=grpLeg)
 // because it is an absolute timestamp the same bar is picked again on every
 // reload rather than drifting with the last bar.
 latchOn = input.bool(false, "Latch triggers", group=grpLatch, tooltip="Freeze the primary and secondary triggers at the anchor bar below and hold them until this is switched off.")
-latchFrom = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Latch anchor bar", confirm=true, group=grpLatch, tooltip="Click a bar on the chart. The triggers are frozen as they stood on that bar. If that bar has no primary cluster the first later bar that does is used.")
+latchFrom = input.time(timestamp("01 Jan 2100 00:00 +0000"), "Latch anchor bar", confirm=true, group=grpLatch, tooltip="Click a bar on the chart. The default is far in the future so that switching the latch on without picking a bar does nothing, rather than freezing on some arbitrary early bar.")
 showFibs = input.bool(true, "Show Fibonacci levels", group=grpDisplay)
 showMAs = input.bool(true, "Show moving averages", group=grpDisplay)
 showSecondary = input.bool(true, "Show secondary trigger", group=grpDisplay)
 showTable = input.bool(true, "Show info table", group=grpDisplay)
 clusterTolPct = input.float(0.75, "Cluster tolerance (%)", minval=0.05, step=0.05, group=grpCluster)
+bandWidthMult = input.float(0.0, "Max band width (x tolerance)", minval=0.0, step=0.5, group=grpCluster, tooltip="Merging compares adjacent gaps only, so a chain of small gaps can span arbitrarily far. This caps the total width of a band at a multiple of the tolerance. 0 leaves merging unlimited, which is the existing behaviour.")
 showPivots = input.bool(true, "Include pivot highs/lows", group=grpCluster)
 pivotCount = input.int(50, "Max pivots retained", minval=1, maxval=200, group=grpCluster, tooltip="Safety cap only. Age is the primary filter.")
 pivotMaxAge = input.int(250, "Pivot max age (bars)", minval=10, maxval=5000, group=grpCluster, tooltip="Pivots older than this many bars are dropped, matching the Lookback window used for the fibs and swing extremes.")
@@ -219,6 +220,10 @@ if array.size(candidates) > 0
 array.sort(sorted, order.ascending)
 
 tol = close * clusterTolPct / 100.0
+// Merging is adjacent-gap based, so a band has no inherent width limit: each
+// step can sit inside tol while the chain spans many multiples of it, at which
+// point "cluster" stops describing anything. 0 keeps the old unlimited merge.
+maxBandWidth = bandWidthMult <= 0 ? 1.0e10 : tol * bandWidthMult
 
 if array.size(sorted) > 0
     float curBot = array.get(sorted, 0)
@@ -228,7 +233,7 @@ if array.size(sorted) > 0
     if array.size(sorted) > 1
         for i = 1 to array.size(sorted) - 1
             lv = array.get(sorted, i)
-            if lv - prev <= tol
+            if lv - prev <= tol and lv - curBot <= maxBandWidth
                 curTop := math.max(curTop, lv)
                 curBot := math.min(curBot, lv)
                 curCount += 1
@@ -283,6 +288,7 @@ var float lockTop = na
 var float lockBot = na
 var int lockConf = na
 var float lockSec = na
+var float lockSecBot = na
 var int lockSecConf = na
 
 if latchOn and na(lockTop) and time >= latchFrom and not na(primaryTop)
@@ -290,6 +296,7 @@ if latchOn and na(lockTop) and time >= latchFrom and not na(primaryTop)
     lockBot := primaryBot
     lockConf := primaryCount
     lockSec := secondaryTop
+    lockSecBot := secondaryBot
     lockSecConf := secondaryCount
 
 held = not na(lockTop)
@@ -303,6 +310,10 @@ secondaryConfluence = held ? lockSecConf : secondaryCount
 bandTop = held ? lockTop : primaryTop
 bandBot = held ? lockBot : primaryBot
 bandSecTop = held ? lockSec : secondaryTop
+// Switched for the same reason as bandBot. Leaving the box bottom on the live
+// secondaryBot while its top is frozen lets the two drift apart, and the box
+// can invert if the live band has moved above the frozen top.
+bandSecBot = held ? lockSecBot : secondaryBot
 
 // Breakout condition, evaluated at bar close.
 // The comparison is against the *previous* bar's trigger, not this bar's. Every
@@ -335,11 +346,22 @@ breakConf = held ? lockConf : prevConfluence
 // trigger re-floats above price after a break and the repeat cannot happen, so
 // lockBroken is never written and this reduces to the plain condition.
 var bool lockBroken = false
+var bool lockEverFired = false
+
+// Re-arm once price falls back below the frozen level. Without this the latch
+// is one-way: after the single fire, confirmedBreak is false forever, so
+// barcolor() stops highlighting and a genuine later re-break is never
+// reported. lockEverFired is separate and never cleared, so the table can
+// distinguish "has not fired" from "fired earlier" instead of showing the
+// same "no" for both.
+if held and not na(breakRef) and close < breakRef
+    lockBroken := false
 
 confirmedBreak = not na(breakRef) and close > breakRef and volumeConfirmed and not lockBroken
 
 if confirmedBreak and held
     lockBroken := true
+    lockEverFired := true
 
 // Highlight every bar that confirms a breakout. barcolor() is only permitted at
 // the top level of the script, so the condition lives in the argument.
@@ -399,7 +421,7 @@ if barstate.islast
 
     // Secondary trigger cluster
     if showSecondary and not na(bandSecTop)
-        bx2 = box.new(left=bar_index - lookback, top=bandSecTop, right=bar_index, bottom=secondaryBot, bgcolor=color.new(cSecondary, 92), border_color=color.new(cSecondary, 65))
+        bx2 = box.new(left=bar_index - lookback, top=bandSecTop, right=bar_index, bottom=bandSecBot, bgcolor=color.new(cSecondary, 92), border_color=color.new(cSecondary, 65))
         array.push(boxes, bx2)
         ln2 = line.new(bar_index - lookback, bandSecTop, bar_index, bandSecTop, extend=extend.right, color=color.new(cSecondary, 35), width=1, style=line.style_dashed)
         array.push(lines, ln2)
@@ -426,6 +448,8 @@ if barstate.islast
         table.cell(t, 0, 4, "Vol vs 1.5x", text_color=color.white, text_size=size.tiny)
         table.cell(t, 1, 4, na(volRatio) ? "n/a" : str.tostring(volRatio, format.mintick) + "x", text_color=color.white, text_size=size.tiny)
         table.cell(t, 0, 5, "Last bar break", text_color=color.white, text_size=size.tiny)
-        table.cell(t, 1, 5, confirmedBreak ? "YES" : "no", text_color=confirmedBreak ? color.lime : color.white, text_size=size.tiny)
+        breakTxt = confirmedBreak ? "YES" : lockEverFired ? "fired earlier" : "no"
+        breakCol = confirmedBreak ? color.lime : lockEverFired ? color.orange : color.white
+        table.cell(t, 1, 5, breakTxt, text_color=breakCol, text_size=size.tiny)
         table.cell(t, 0, 6, "Strong vol", text_color=color.white, text_size=size.tiny)
         table.cell(t, 1, 6, strongVolume ? "YES" : "no", text_color=strongVolume ? color.lime : color.white, text_size=size.tiny)

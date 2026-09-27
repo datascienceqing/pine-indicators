@@ -37,7 +37,7 @@ lookback = input.int(250, "Lookback", minval=20, group=grpLeg)
 // because it is an absolute timestamp the same bar is picked again on every
 // reload rather than drifting with the last bar.
 latchOn = input.bool(false, "Latch trigger", group=grpLatch, tooltip="Freeze the trigger rung at the anchor bar below and hold it until this is switched off.")
-latchFrom = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Latch anchor bar", confirm=true, group=grpLatch, tooltip="Click a bar on the chart. The trigger is frozen as it stood on that bar. If that bar has no rung inside the distance budget the first later bar that does is used.")
+latchFrom = input.time(timestamp("01 Jan 2100 00:00 +0000"), "Latch anchor bar", confirm=true, group=grpLatch, tooltip="Click a bar on the chart. The default is far in the future so that switching the latch on without picking a bar does nothing, rather than freezing on some arbitrary early bar.")
 showPivots = input.bool(true, "Include pivot highs/lows", group=grpCluster)
 pivotCount = input.int(50, "Max pivots retained", minval=1, maxval=200, group=grpCluster, tooltip="Safety cap only. Age is the primary filter.")
 pivotMaxAge = input.int(250, "Pivot max age (bars)", minval=10, maxval=5000, group=grpCluster, tooltip="Pivots older than this many bars are dropped, matching the Lookback window used for the fibs and swing extremes.")
@@ -265,6 +265,14 @@ breakCleared = held ? lockCleared : prevCleared
 // trigger re-floats above price after a break and the repeat cannot happen, so
 // lockBroken is never written and this reduces to the plain condition.
 var bool lockBroken = false
+
+// Re-arm once price falls back below the frozen level. Without this the latch
+// is one-way: after the single fire, confirmedBreak is false forever, so
+// barcolor() stops highlighting and a genuine later re-break is never
+// reported. This script has no break-status row, so unlike the band script it
+// keeps no separate "has fired" flag.
+if held and not na(breakRef) and close < breakRef
+    lockBroken := false
 
 confirmedBreak = not na(breakRef) and close > breakRef and volumeConfirmed and not lockBroken
 
