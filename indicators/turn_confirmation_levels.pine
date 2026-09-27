@@ -9,9 +9,26 @@ string grpLeg = "Leg / Fib"
 string grpCluster = "Cluster / Trigger"
 string grpVolume = "Volume Filter"
 string grpDisplay = "Display"
+string grpLatch = "Latch"
 string grpColors = "Colors"
 
 lookback = input.int(250, "Lookback", minval=20, group=grpLeg)
+
+// Latch. The clusters are rebuilt every bar from the levels above the close, so
+// the *selection* floats upwards as price rises even though the levels
+// themselves are mostly static. That makes an unlatched trigger a moving
+// target: price never closes above it because a higher band is chosen as soon
+// as price approaches the current one.
+//
+// Latching freezes one trigger so that clearing it is a statement about the
+// level rather than about the close. There is no clickable control in Pine and
+// toggling an input re-executes the script from the first bar, so the script
+// can never learn *when* a button was pressed. input.time with confirm=true is
+// the interactive equivalent: the anchor bar is chosen on the chart, and
+// because it is an absolute timestamp the same bar is picked again on every
+// reload rather than drifting with the last bar.
+latchOn = input.bool(false, "Latch triggers", group=grpLatch, tooltip="Freeze the primary and secondary triggers at the anchor bar below and hold them until this is switched off.")
+latchFrom = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Latch anchor bar", confirm=true, group=grpLatch, tooltip="Click a bar on the chart. The triggers are frozen as they stood on that bar. If that bar has no primary cluster the first later bar that does is used.")
 showFibs = input.bool(true, "Show Fibonacci levels", group=grpDisplay)
 showMAs = input.bool(true, "Show moving averages", group=grpDisplay)
 showSecondary = input.bool(true, "Show secondary trigger", group=grpDisplay)
@@ -256,10 +273,36 @@ if array.size(clusterTopArr) > 0
                 secondaryBot := botV
                 secondaryCount := cntV
 
-triggerPrice = primaryTop
-secondaryPrice = secondaryTop
-confluenceCount = primaryCount
-secondaryConfluence = secondaryCount
+// Capture once, on the first bar at or after the anchor that actually has a
+// primary cluster. A `var` holds it, so na(lockTop) is itself the "not yet
+// captured" test and no separate flag is needed to prevent re-latching.
+//
+// Switching the latch off needs no code: every input change re-executes the
+// script from the first bar, so lockTop is simply never written.
+var float lockTop = na
+var float lockBot = na
+var int lockConf = na
+var float lockSec = na
+var int lockSecConf = na
+
+if latchOn and na(lockTop) and time >= latchFrom and not na(primaryTop)
+    lockTop := primaryTop
+    lockBot := primaryBot
+    lockConf := primaryCount
+    lockSec := secondaryTop
+    lockSecConf := secondaryCount
+
+held = not na(lockTop)
+
+triggerPrice = held ? lockTop : primaryTop
+secondaryPrice = held ? lockSec : secondaryTop
+confluenceCount = held ? lockConf : primaryCount
+secondaryConfluence = held ? lockSecConf : secondaryCount
+// Drawn band follows the same switch, so the box on the chart is the band the
+// signal is actually testing against.
+bandTop = held ? lockTop : primaryTop
+bandBot = held ? lockBot : primaryBot
+bandSecTop = held ? lockSec : secondaryTop
 
 // Breakout condition, evaluated at bar close.
 // The comparison is against the *previous* bar's trigger, not this bar's. Every
@@ -281,7 +324,13 @@ secondaryConfluence = secondaryCount
 var float prevTrigger = na
 var int prevConfluence = na
 
-confirmedBreak = not na(prevTrigger) and close > prevTrigger and volumeConfirmed
+// While latched the reference is the frozen level, which is already fixed and
+// needs no lag. Unlatched it is the previous bar's trigger, for the reason
+// above. One condition either way.
+breakRef = held ? lockTop : prevTrigger
+breakConf = held ? lockConf : prevConfluence
+
+confirmedBreak = not na(breakRef) and close > breakRef and volumeConfirmed
 
 // Highlight every bar that confirms a breakout. barcolor() is only permitted at
 // the top level of the script, so the condition lives in the argument.
@@ -292,10 +341,10 @@ barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 // ─────────────────────────────────────────────────────────────────────────────
 alertcondition(confirmedBreak, title="Volume-confirmed close breakout", message="Turn Confirmation Levels: volume-confirmed close breakout")
 
-// Reports the level that was actually cleared, and the confluence it carried,
-// which are the previous bar's values.
+// Reports the level that was actually cleared and the confluence it carried:
+// the frozen values while latched, the previous bar's otherwise.
 if confirmedBreak and barstate.isconfirmed
-    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(prevTrigger), str.tostring(prevConfluence), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(breakRef), str.tostring(breakConf), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
 
 // Carry this bar's trigger into the next bar. Must stay below every read of
 // prevTrigger above, or the lag collapses and the signal goes dead again.
@@ -331,21 +380,21 @@ if barstate.islast
             array.push(labels, lb)
 
     // Primary trigger cluster
-    if not na(primaryTop)
-        bx = box.new(left=bar_index - lookback, top=primaryTop, right=bar_index, bottom=primaryBot, bgcolor=color.new(cTrigger, 85), border_color=color.new(cTrigger, 35))
+    if not na(bandTop)
+        bx = box.new(left=bar_index - lookback, top=bandTop, right=bar_index, bottom=bandBot, bgcolor=color.new(cTrigger, 85), border_color=color.new(cTrigger, 35))
         array.push(boxes, bx)
-        ln = line.new(bar_index - lookback, primaryTop, bar_index, primaryTop, extend=extend.right, color=cTrigger, width=2)
+        ln = line.new(bar_index - lookback, bandTop, bar_index, bandTop, extend=extend.right, color=cTrigger, width=2)
         array.push(lines, ln)
-        lb = label.new(bar_index, primaryTop, "TRIGGER " + str.tostring(primaryCount) + "x  @ " + f_fmt(triggerPrice), style=label.style_label_left, textcolor=color.white, color=cTrigger, size=size.small)
+        lb = label.new(bar_index, bandTop, "TRIGGER " + str.tostring(confluenceCount) + "x  @ " + f_fmt(triggerPrice), style=label.style_label_left, textcolor=color.white, color=cTrigger, size=size.small)
         array.push(labels, lb)
 
     // Secondary trigger cluster
-    if showSecondary and not na(secondaryTop)
-        bx2 = box.new(left=bar_index - lookback, top=secondaryTop, right=bar_index, bottom=secondaryBot, bgcolor=color.new(cSecondary, 92), border_color=color.new(cSecondary, 65))
+    if showSecondary and not na(bandSecTop)
+        bx2 = box.new(left=bar_index - lookback, top=bandSecTop, right=bar_index, bottom=secondaryBot, bgcolor=color.new(cSecondary, 92), border_color=color.new(cSecondary, 65))
         array.push(boxes, bx2)
-        ln2 = line.new(bar_index - lookback, secondaryTop, bar_index, secondaryTop, extend=extend.right, color=color.new(cSecondary, 35), width=1, style=line.style_dashed)
+        ln2 = line.new(bar_index - lookback, bandSecTop, bar_index, bandSecTop, extend=extend.right, color=color.new(cSecondary, 35), width=1, style=line.style_dashed)
         array.push(lines, ln2)
-        lb2 = label.new(bar_index, secondaryTop, "secondary / lower probability  " + str.tostring(secondaryConfluence) + "x  @ " + f_fmt(secondaryPrice), style=label.style_label_left, textcolor=color.white, color=color.new(color.black, 0), size=size.tiny)
+        lb2 = label.new(bar_index, bandSecTop, "secondary / lower probability  " + str.tostring(secondaryConfluence) + "x  @ " + f_fmt(secondaryPrice), style=label.style_label_left, textcolor=color.white, color=color.new(color.black, 0), size=size.tiny)
         array.push(labels, lb2)
 
     // Invalidation level
@@ -357,12 +406,12 @@ if barstate.islast
 
     // Info table
     if showTable
-        table.cell(t, 0, 0, "Primary trigger", text_color=color.white, text_size=size.tiny)
-        table.cell(t, 1, 0, na(primaryTop) ? "n/a" : f_fmt(primaryTop), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 0, 0, held ? "Primary trigger (latched)" : "Primary trigger", text_color=held ? color.orange : color.white, text_size=size.tiny)
+        table.cell(t, 1, 0, na(bandTop) ? "n/a" : f_fmt(bandTop), text_color=held ? color.orange : color.white, text_size=size.tiny)
         table.cell(t, 0, 1, "Confluence count", text_color=color.white, text_size=size.tiny)
-        table.cell(t, 1, 1, na(primaryCount) ? "n/a" : str.tostring(primaryCount), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 1, na(confluenceCount) ? "n/a" : str.tostring(confluenceCount), text_color=color.white, text_size=size.tiny)
         table.cell(t, 0, 2, "Secondary trigger", text_color=color.white, text_size=size.tiny)
-        table.cell(t, 1, 2, na(secondaryTop) ? "n/a" : f_fmt(secondaryTop), text_color=color.white, text_size=size.tiny)
+        table.cell(t, 1, 2, na(bandSecTop) ? "n/a" : f_fmt(bandSecTop), text_color=color.white, text_size=size.tiny)
         table.cell(t, 0, 3, "Invalidation", text_color=color.white, text_size=size.tiny)
         table.cell(t, 1, 3, na(lastPivotLow) ? "n/a" : f_fmt(lastPivotLow), text_color=color.white, text_size=size.tiny)
         table.cell(t, 0, 4, "Vol vs 1.5x", text_color=color.white, text_size=size.tiny)

@@ -20,9 +20,24 @@ string grpLeg = "Leg / Fib"
 string grpCluster = "Ladder"
 string grpVolume = "Volume Filter"
 string grpDisplay = "Display"
+string grpLatch = "Latch"
 string grpColors = "Colors"
 
 lookback = input.int(250, "Lookback", minval=20, group=grpLeg)
+
+// Latch. The ladder is rebuilt every bar from the levels above the close, so
+// the trigger picked out of it floats upwards as price rises even though the
+// rungs themselves are mostly static. Price never closes above a moving target.
+//
+// Latching freezes one rung so that clearing it is a statement about the level
+// rather than about the close. There is no clickable control in Pine and
+// toggling an input re-executes the script from the first bar, so the script
+// can never learn *when* a button was pressed. input.time with confirm=true is
+// the interactive equivalent: the anchor bar is chosen on the chart, and
+// because it is an absolute timestamp the same bar is picked again on every
+// reload rather than drifting with the last bar.
+latchOn = input.bool(false, "Latch trigger", group=grpLatch, tooltip="Freeze the trigger rung at the anchor bar below and hold it until this is switched off.")
+latchFrom = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Latch anchor bar", confirm=true, group=grpLatch, tooltip="Click a bar on the chart. The trigger is frozen as it stood on that bar. If that bar has no rung inside the distance budget the first later bar that does is used.")
 showPivots = input.bool(true, "Include pivot highs/lows", group=grpCluster)
 pivotCount = input.int(50, "Max pivots retained", minval=1, maxval=200, group=grpCluster, tooltip="Safety cap only. Age is the primary filter.")
 pivotMaxAge = input.int(250, "Pivot max age (bars)", minval=10, maxval=5000, group=grpCluster, tooltip="Pivots older than this many bars are dropped, matching the Lookback window used for the fibs and swing extremes.")
@@ -200,6 +215,26 @@ if array.size(ladder) > 0
             trigger := lv
             cleared := i + 1
 
+// Capture once, on the first bar at or after the anchor that actually has a
+// trigger rung. A `var` holds it, so na(lockTrig) is itself the "not yet
+// captured" test and no separate flag is needed to prevent re-latching.
+//
+// Switching the latch off needs no code: every input change re-executes the
+// script from the first bar, so lockTrig is simply never written.
+var float lockTrig = na
+var int lockCleared = na
+
+if latchOn and na(lockTrig) and time >= latchFrom and not na(trigger)
+    lockTrig := trigger
+    lockCleared := cleared
+
+held = not na(lockTrig)
+
+// The rung the chart draws and the table lists follows the same switch, so the
+// highlighted level is the one the signal is testing against.
+shownTrig = held ? lockTrig : trigger
+shownCleared = held ? lockCleared : cleared
+
 // The comparison is against the *previous* bar's trigger, not this bar's.
 // f_add_level admits a level only when v > close, so every rung of the ladder,
 // and therefore the trigger picked out of it, is above the close on its own bar
@@ -219,7 +254,13 @@ if array.size(ladder) > 0
 var float prevTrigger = na
 var int prevCleared = na
 
-confirmedBreak = not na(prevTrigger) and close > prevTrigger and volumeConfirmed
+// While latched the reference is the frozen rung, which is already fixed and
+// needs no lag. Unlatched it is the previous bar's trigger, for the reason
+// above. One condition either way.
+breakRef = held ? lockTrig : prevTrigger
+breakCleared = held ? lockCleared : prevCleared
+
+confirmedBreak = not na(breakRef) and close > breakRef and volumeConfirmed
 
 barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 
@@ -228,10 +269,10 @@ barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 // ─────────────────────────────────────────────────────────────────────────────
 alertcondition(confirmedBreak, title="Volume-confirmed close breakout", message="Confluence Ladder: volume-confirmed close breakout")
 
-// Reports the rung that was actually cleared, and the count it carried, which
-// are the previous bar's values.
+// Reports the rung that was actually cleared and the count it carried: the
+// frozen values while latched, the previous bar's otherwise.
 if confirmedBreak and barstate.isconfirmed
-    alert(str.format("{0} closed above {1}, clearing {2} levels | volume={3}x average", syminfo.ticker, f_fmt(prevTrigger), str.tostring(prevCleared), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+    alert(str.format("{0} closed above {1}, clearing {2} levels | volume={3}x average", syminfo.ticker, f_fmt(breakRef), str.tostring(breakCleared), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
 
 // Carry this bar's trigger into the next bar. Must stay below every read of
 // prevTrigger above, or the lag collapses and the signal goes dead again.
@@ -248,7 +289,7 @@ if barstate.islast
         drawn = int(math.min(array.size(ladder), maxRows))
         for i = 0 to drawn - 1
             lv = array.get(ladder, i)
-            isTrigger = not na(trigger) and lv == trigger
+            isTrigger = not na(shownTrig) and lv == shownTrig
             col = isTrigger ? cTrigger : cRung
             ln = line.new(bar_index - lookback, lv, bar_index, lv, extend=extend.right, color=col, width=isTrigger ? 2 : 1, style=isTrigger ? line.style_solid : line.style_dotted)
             array.push(lines, ln)
@@ -259,14 +300,14 @@ if barstate.islast
     // Info table
     if showTable
         table.clear(t, 0, 0, 2, 20)
-        table.cell(t, 0, 0, "#", text_color=color.gray, text_size=size.tiny)
+        table.cell(t, 0, 0, held ? "# (latched)" : "#", text_color=held ? color.orange : color.gray, text_size=size.tiny)
         table.cell(t, 1, 0, "level", text_color=color.gray, text_size=size.tiny)
         table.cell(t, 2, 0, "from close", text_color=color.gray, text_size=size.tiny)
         if array.size(ladder) > 0
             rows = int(math.min(array.size(ladder), maxRows))
             for i = 0 to rows - 1
                 lv = array.get(ladder, i)
-                isTrigger = not na(trigger) and lv == trigger
+                isTrigger = not na(shownTrig) and lv == shownTrig
                 tc = isTrigger ? color.orange : color.white
                 table.cell(t, 0, i + 1, str.tostring(i + 1), text_color=tc, text_size=size.tiny)
                 table.cell(t, 1, i + 1, f_fmt(lv), text_color=tc, text_size=size.tiny)

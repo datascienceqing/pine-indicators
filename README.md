@@ -21,6 +21,16 @@ Filter, Display, and Colors.
 firing once per confirmed bar close with ticker, trigger price, confluence
 count, and volume ratio.
 
+**Latching.** The clusters are rebuilt on every bar from the levels above the
+close, so the *selection* floats upwards as price rises even though the levels
+themselves mostly do not move: as price approaches one band, a higher one is
+chosen. An unlatched trigger is therefore a moving target. The **Latch** group
+freezes it. `Latch triggers` turns the freeze on and `Latch anchor bar` is an
+interactive input — click a bar on the chart and the triggers are held as they
+stood there until you switch the latch off. Because the anchor is an absolute
+timestamp rather than an offset, the same bar is chosen again on every reload.
+A latched level signals once rather than on every subsequent bar above it.
+
 ### Confluence Ladder (`indicators/confluence_ladder.pine`)
 
 Companion to the above, answering a different question. It does no banding at
@@ -33,6 +43,9 @@ The two scripts can legitimately disagree. Turn Confirmation Levels optimises
 for the densest band; this one makes the distance-versus-levels-cleared
 trade-off visible and leaves the choice to you. Neither output is a
 recommendation.
+
+It carries the same **Latch** group, freezing the trigger rung at an anchor bar
+you click on the chart.
 
 ## Usage
 
