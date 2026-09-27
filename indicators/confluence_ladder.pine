@@ -200,7 +200,26 @@ if array.size(ladder) > 0
             trigger := lv
             cleared := i + 1
 
-confirmedBreak = not na(trigger) and close > trigger and close[1] <= trigger and volumeConfirmed
+// The comparison is against the *previous* bar's trigger, not this bar's.
+// f_add_level admits a level only when v > close, so every rung of the ladder,
+// and therefore the trigger picked out of it, is above the close on its own bar
+// by construction: `close > trigger` is unsatisfiable and the signal could
+// never fire. The breakout this script means to report is a close above the
+// rung that was inside the distance budget as of the previous bar, which is
+// what prevTrigger holds.
+//
+// The old `close[1] <= trigger` leg is dropped rather than rewritten against
+// prevTrigger: prevTrigger was above close[1] by the same construction that
+// makes the lag necessary, so the test is always true and only costs a reader
+// the time to prove it.
+//
+// A plain `var` carries the value rather than the history operator, because
+// trigger is assigned inside a loop and this keeps the one-bar lag explicit at
+// the point where it matters.
+var float prevTrigger = na
+var int prevCleared = na
+
+confirmedBreak = not na(prevTrigger) and close > prevTrigger and volumeConfirmed
 
 barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 
@@ -209,8 +228,15 @@ barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 // ─────────────────────────────────────────────────────────────────────────────
 alertcondition(confirmedBreak, title="Volume-confirmed close breakout", message="Confluence Ladder: volume-confirmed close breakout")
 
+// Reports the rung that was actually cleared, and the count it carried, which
+// are the previous bar's values.
 if confirmedBreak and barstate.isconfirmed
-    alert(str.format("{0} closed above {1}, clearing {2} levels | volume={3}x average", syminfo.ticker, f_fmt(trigger), str.tostring(cleared), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+    alert(str.format("{0} closed above {1}, clearing {2} levels | volume={3}x average", syminfo.ticker, f_fmt(prevTrigger), str.tostring(prevCleared), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+
+// Carry this bar's trigger into the next bar. Must stay below every read of
+// prevTrigger above, or the lag collapses and the signal goes dead again.
+prevTrigger := trigger
+prevCleared := cleared
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Drawing

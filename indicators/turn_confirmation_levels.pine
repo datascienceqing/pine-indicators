@@ -262,7 +262,26 @@ confluenceCount = primaryCount
 secondaryConfluence = secondaryCount
 
 // Breakout condition, evaluated at bar close.
-confirmedBreak = not na(triggerPrice) and close > triggerPrice and close[1] <= triggerPrice and volumeConfirmed
+// The comparison is against the *previous* bar's trigger, not this bar's. Every
+// cluster is built from levels strictly above the close and the primary is
+// gated on botV >= close, so triggerPrice is above the close on its own bar by
+// construction: `close > triggerPrice` is unsatisfiable and the signal could
+// never fire. The breakout this script means to report, and the one its alert
+// text describes, is a close above the level that was resistance as of the
+// previous bar, which is what prevTrigger holds.
+//
+// The old `close[1] <= triggerPrice` leg is dropped rather than rewritten
+// against prevTrigger: prevTrigger was above close[1] by the same construction
+// that makes the lag necessary, so the test is always true and only costs a
+// reader the time to prove it.
+//
+// A plain `var` carries the value rather than the history operator, because
+// triggerPrice is assigned inside conditional branches and this keeps the
+// one-bar lag explicit at the point where it matters.
+var float prevTrigger = na
+var int prevConfluence = na
+
+confirmedBreak = not na(prevTrigger) and close > prevTrigger and volumeConfirmed
 
 // Highlight every bar that confirms a breakout. barcolor() is only permitted at
 // the top level of the script, so the condition lives in the argument.
@@ -273,8 +292,15 @@ barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 // ─────────────────────────────────────────────────────────────────────────────
 alertcondition(confirmedBreak, title="Volume-confirmed close breakout", message="Turn Confirmation Levels: volume-confirmed close breakout")
 
+// Reports the level that was actually cleared, and the confluence it carried,
+// which are the previous bar's values.
 if confirmedBreak and barstate.isconfirmed
-    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(triggerPrice), str.tostring(confluenceCount), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(prevTrigger), str.tostring(prevConfluence), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+
+// Carry this bar's trigger into the next bar. Must stay below every read of
+// prevTrigger above, or the lag collapses and the signal goes dead again.
+prevTrigger := triggerPrice
+prevConfluence := confluenceCount
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Drawing
