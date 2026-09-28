@@ -34,6 +34,19 @@ for the densest band; this one makes the distance-versus-levels-cleared
 trade-off visible and leaves the choice to you. Neither output is a
 recommendation.
 
+### Breakdown Confluence Levels (`indicators/breakdown_confluence_levels.pine`)
+
+The downside mirror of Turn Confirmation Levels. Candidates are collected
+*below* the close, clusters are ranked by how many levels they hold, and the
+trigger is the cluster's **top** edge — the first price a decline meets on the
+way into the shelf. A confirmed breakdown is a close below that level on
+above-average volume, with the bar closing in the lower part of its own range
+(a "breakdown" bar that closes on its high is not one).
+
+Adds beyond the upside script: an ATR-based suggested stop, the next shelf down
+as a target with the resulting R:R, and a retest line marking the level that was
+broken.
+
 ## Usage
 
 Open TradingView → Pine Editor → paste the file contents → *Add to chart*.

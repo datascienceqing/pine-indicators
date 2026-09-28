@@ -1,0 +1,478 @@
+// strategy_archetype: first_principles
+//@version=6
+indicator("Breakdown Confluence Levels", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=200)
+
+// The downside mirror of "Turn Confirmation Levels". Candidate levels are
+// collected below the close rather than above, clusters are ranked by how many
+// levels they hold, and the trigger is the cluster's TOP edge: the first price
+// a decline meets on the way into the shelf. A confirmed breakdown is a close
+// below that level on above-average volume, closing in the lower part of its
+// own range.
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+lookback = input.int(250, "Lookback", minval=20, group="Leg / Fib")
+
+clusterTolerancePct = input.float(0.75, "Cluster tolerance %", minval=0.05, step=0.05, group="Cluster / Trigger")
+bandWidthMult       = input.float(0.0, "Max band width (x tolerance)", minval=0.0, step=0.5, tooltip="Merging compares adjacent gaps only, so a chain of small gaps can span arbitrarily far. This caps the total width of a band at a multiple of the tolerance. 0 leaves merging unlimited.", group="Cluster / Trigger")
+includePivots       = input.bool(true, "Include pivots", group="Cluster / Trigger")
+maxPivotsRetained   = input.int(50, "Max pivots retained", minval=1, maxval=200, tooltip="Safety cap only. Age is the primary filter.", group="Cluster / Trigger")
+pivotMaxAgeBars     = input.int(250, "Pivot max age in bars", minval=10, maxval=5000, group="Cluster / Trigger")
+pivotLeftBars       = input.int(5, "Pivot left bars", minval=1, maxval=25, group="Cluster / Trigger")
+pivotRightBars      = input.int(5, "Pivot right bars", minval=1, maxval=25, group="Cluster / Trigger")
+minTrigPct          = input.float(0.5, "Minimum trigger distance %", minval=0.0, step=0.1, group="Cluster / Trigger")
+minimumConfluence   = input.int(3, "Minimum confluence", minval=1, maxval=20, group="Cluster / Trigger")
+
+volLen              = input.int(10, "Volume average length", minval=1, group="Break Quality")
+volMult             = input.float(1.5, "Volume multiplier", minval=1.0, step=0.1, group="Break Quality")
+closeQuality        = input.float(0.5, "Close quality", minval=0.1, maxval=1.0, step=0.05, tooltip="Where in the bar's own range the close must sit, 0 = at the low. A breakdown bar that closes near its high is not a breakdown.", group="Break Quality")
+
+stopATRMult         = input.float(1.5, "Stop ATR multiple", minval=0.5, maxval=5.0, step=0.25, group="Risk")
+atrLen              = input.int(14, "ATR length", minval=1, group="Risk")
+
+showFibs            = input.bool(true, "Show fibs", group="Display")
+showMAs             = input.bool(true, "Show MAs", group="Display")
+showSecondary       = input.bool(true, "Show secondary", group="Display")
+showTable           = input.bool(true, "Show table", group="Display")
+showRetest          = input.bool(true, "Show retest zone", group="Display")
+
+latchTriggers       = input.bool(false, "Latch triggers", group="Latch")
+latchFrom           = input.time(timestamp("01 Jan 2050 00:00 +0000"), "Latch anchor bar", confirm=true, tooltip="Click a bar on the chart. The default is far in the future so switching the latch on without picking a bar does nothing.", group="Latch")
+
+fibColor            = input.color(color.new(color.teal, 0), "Fib", group="Colors")
+maColor             = input.color(color.new(color.orange, 0), "MAs", group="Colors")
+primaryColor        = input.color(color.new(color.red, 0), "Primary trigger", group="Colors")
+secondaryColor      = input.color(color.new(color.fuchsia, 0), "Secondary trigger", group="Colors")
+invalidationColor   = input.color(color.new(color.maroon, 0), "Invalidation", group="Colors")
+
+//------------------------------------------------------------------------------
+// Core series
+//------------------------------------------------------------------------------
+atr = ta.atr(atrLen)
+volAvg = ta.sma(volume, volLen)
+volRatio = volAvg > 0 ? volume / volAvg : na
+volumeConfirmed = volume >= volAvg * volMult
+barRange = high - low
+closeOK = barRange <= 0.0 ? true : ((close - low) / barRange) <= closeQuality
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+addSupportCandidate(float[] arr, float v) =>
+    if not na(v) and v < close
+        array.push(arr, v)
+
+prunePivotSeries(float[] prices, int[] bars, int maxAge, int cap) =>
+    keepGoing = true
+    while keepGoing
+        keepGoing := false
+        if array.size(prices) > 0
+            if bar_index - array.get(bars, 0) > maxAge
+                array.shift(prices)
+                array.shift(bars)
+                keepGoing := true
+    while array.size(prices) > cap
+        array.shift(prices)
+        array.shift(bars)
+
+formatVal(float v) =>
+    na(v) ? "n/a" : str.tostring(v, format.mintick)
+
+//------------------------------------------------------------------------------
+// Candidate collection
+//------------------------------------------------------------------------------
+var float[] candidates = array.new_float()
+array.clear(candidates)
+
+// Fib retracements from dominant swing leg
+swingHi = ta.highest(high, lookback)
+swingLo = ta.lowest(low, lookback)
+swingRange = swingHi - swingLo
+fib236 = swingLo + swingRange * 0.236
+fib382 = swingLo + swingRange * 0.382
+fib50  = swingLo + swingRange * 0.5
+fib618 = swingLo + swingRange * 0.618
+fib786 = swingLo + swingRange * 0.786
+addSupportCandidate(candidates, fib236)
+addSupportCandidate(candidates, fib382)
+addSupportCandidate(candidates, fib50)
+addSupportCandidate(candidates, fib618)
+addSupportCandidate(candidates, fib786)
+
+// Moving averages as flat shelves
+ema10 = ta.ema(close, 10)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+sma50 = ta.sma(close, 50)
+sma100 = ta.sma(close, 100)
+sma200 = ta.sma(close, 200)
+addSupportCandidate(candidates, ema10)
+addSupportCandidate(candidates, ema20)
+addSupportCandidate(candidates, ema50)
+addSupportCandidate(candidates, sma50)
+addSupportCandidate(candidates, sma100)
+addSupportCandidate(candidates, sma200)
+
+// Swing extremes
+addSupportCandidate(candidates, swingHi)
+addSupportCandidate(candidates, swingLo)
+
+// Pivot arrays, retained by age with the count as a safety cap only
+var float[] pivotHighPrices = array.new_float()
+var int[]   pivotHighBars   = array.new_int()
+var float[] pivotLowPrices  = array.new_float()
+var int[]   pivotLowBars    = array.new_int()
+
+ph = ta.pivothigh(high, pivotLeftBars, pivotRightBars)
+pl = ta.pivotlow(low, pivotLeftBars, pivotRightBars)
+// ta.pivothigh confirms pivotRightBars after the pivot, so the pivot's own bar
+// is bar_index - pivotRightBars.
+if includePivots and not na(ph)
+    array.push(pivotHighPrices, ph)
+    array.push(pivotHighBars, bar_index - pivotRightBars)
+if includePivots and not na(pl)
+    array.push(pivotLowPrices, pl)
+    array.push(pivotLowBars, bar_index - pivotRightBars)
+
+prunePivotSeries(pivotHighPrices, pivotHighBars, pivotMaxAgeBars, maxPivotsRetained)
+prunePivotSeries(pivotLowPrices, pivotLowBars, pivotMaxAgeBars, maxPivotsRetained)
+
+if includePivots and array.size(pivotHighPrices) > 0
+    for i = 0 to array.size(pivotHighPrices) - 1
+        addSupportCandidate(candidates, array.get(pivotHighPrices, i))
+if includePivots and array.size(pivotLowPrices) > 0
+    for i = 0 to array.size(pivotLowPrices) - 1
+        addSupportCandidate(candidates, array.get(pivotLowPrices, i))
+
+//------------------------------------------------------------------------------
+// Clustering
+//------------------------------------------------------------------------------
+var float[] sorted = array.new_float()
+var float[] clTop = array.new_float()
+var float[] clBot = array.new_float()
+var int[]   clCnt = array.new_int()
+
+array.clear(sorted)
+array.clear(clTop)
+array.clear(clBot)
+array.clear(clCnt)
+
+if array.size(candidates) > 0
+    for i = 0 to array.size(candidates) - 1
+        array.push(sorted, array.get(candidates, i))
+    array.sort(sorted, order.ascending)
+
+    tol = close * clusterTolerancePct / 100.0
+    maxBandWidth = bandWidthMult <= 0 ? 1.0e10 : tol * bandWidthMult
+    float curTop = na
+    float curBot = na
+    int curCnt = 0
+
+    // sorted is ascending and curTop is always the last level merged, so
+    // lvl - curTop is the adjacent gap; lvl - curBot is the band's total width.
+    for i = 0 to array.size(sorted) - 1
+        lvl = array.get(sorted, i)
+        if na(curTop)
+            curTop := lvl
+            curBot := lvl
+            curCnt := 1
+        else if lvl - curTop <= tol and lvl - curBot <= maxBandWidth
+            curTop := lvl
+            curCnt += 1
+        else
+            array.push(clTop, curTop)
+            array.push(clBot, curBot)
+            array.push(clCnt, curCnt)
+            curTop := lvl
+            curBot := lvl
+            curCnt := 1
+    if not na(curTop)
+        array.push(clTop, curTop)
+        array.push(clBot, curBot)
+        array.push(clCnt, curCnt)
+
+//------------------------------------------------------------------------------
+// Trigger selection
+//------------------------------------------------------------------------------
+var float primaryTop = na
+var float primaryBot = na
+var int   primaryCnt = na
+var float secondaryTop = na
+var float secondaryBot = na
+var int   secondaryCnt = na
+var float triggerPrice = na
+var float prevTrigger = na
+var int   prevConfluence = na
+var float lastBroken = na
+var int   lastBrokenBar = na
+
+primaryTop := na
+primaryBot := na
+primaryCnt := na
+secondaryTop := na
+secondaryBot := na
+secondaryCnt := na
+triggerPrice := na
+
+if array.size(clTop) > 0
+    int bestCnt = 0
+    float bestTop = na
+    float bestBot = na
+    int secondCnt = 0
+    float secondTop = na
+    float secondBot = na
+    for i = 0 to array.size(clTop) - 1
+        top = array.get(clTop, i)
+        bot = array.get(clBot, i)
+        cnt = array.get(clCnt, i)
+        // The whole band must sit below the close by at least minTrigPct, so
+        // the top edge is the test. A band straddling price would otherwise
+        // count levels above the close, which are resistance, not support.
+        eligible = top <= close * (1.0 - minTrigPct / 100.0) and cnt >= minimumConfluence
+        if eligible
+            // On a tie the HIGHER top wins: the nearer shelf on the way down.
+            if cnt > bestCnt or (cnt == bestCnt and (na(bestTop) or top > bestTop))
+                secondCnt := bestCnt
+                secondTop := bestTop
+                secondBot := bestBot
+                bestCnt := cnt
+                bestTop := top
+                bestBot := bot
+            else if cnt > secondCnt or (cnt == secondCnt and (na(secondTop) or top > secondTop))
+                secondCnt := cnt
+                secondTop := top
+                secondBot := bot
+    if bestCnt > 0
+        primaryTop := bestTop
+        primaryBot := bestBot
+        primaryCnt := bestCnt
+        triggerPrice := primaryTop
+    if secondCnt > 0
+        secondaryTop := secondTop
+        secondaryBot := secondBot
+        secondaryCnt := secondCnt
+
+// Latch state
+var float lockTop = na
+var float lockBot = na
+var int   lockCnt = na
+var float lockSecondaryTop = na
+var float lockSecondaryBot = na
+var int   lockSecondaryCnt = na
+var bool  lockBroken = false
+var bool  lockEverFired = false
+
+latchActive = latchTriggers and time >= latchFrom
+if not latchActive
+    lockTop := na
+    lockBot := na
+    lockCnt := na
+    lockSecondaryTop := na
+    lockSecondaryBot := na
+    lockSecondaryCnt := na
+    lockBroken := false
+else if na(lockTop) and not na(primaryTop)
+    lockTop := primaryTop
+    lockBot := primaryBot
+    lockCnt := primaryCnt
+    lockSecondaryTop := secondaryTop
+    lockSecondaryBot := secondaryBot
+    lockSecondaryCnt := secondaryCnt
+
+held = latchActive and not na(lockTop)
+
+activeTop = held ? lockTop : primaryTop
+activeBot = held ? lockBot : primaryBot
+activeCnt = held ? lockCnt : primaryCnt
+activeSecondaryTop = held ? lockSecondaryTop : secondaryTop
+activeSecondaryBot = held ? lockSecondaryBot : secondaryBot
+activeSecondaryCnt = held ? lockSecondaryCnt : secondaryCnt
+
+//------------------------------------------------------------------------------
+// Break logic
+//
+// Clusters are below price by construction, so a same-bar `close < triggerPrice`
+// is unsatisfiable and the signal could never fire. Unlatched, the reference is
+// therefore the PREVIOUS bar's trigger, held in prevTrigger and assigned at the
+// very bottom of the script, below every read.
+//
+// Latched, the reference is the frozen level itself, which is already fixed and
+// needs no lag. prevTrigger tracks the live trigger regardless, so switching the
+// latch off resumes correctly.
+//------------------------------------------------------------------------------
+breakRef = held ? lockTop : prevTrigger
+breakConf = held ? lockCnt : prevConfluence
+
+// A frozen level does not move, so without this guard every later bar below it
+// re-fires. The re-arm matters just as much: once price recovers above the
+// level, a genuine later breakdown should report again. lockEverFired is never
+// cleared, so the table can separate "has not fired" from "fired earlier".
+if held and not na(breakRef) and close > breakRef
+    lockBroken := false
+
+confirmedBreak = not na(breakRef) and close < breakRef and volumeConfirmed and closeOK and not lockBroken
+
+if confirmedBreak
+    if held
+        lockBroken := true
+        lockEverFired := true
+    lastBroken := breakRef
+    lastBrokenBar := bar_index
+
+//------------------------------------------------------------------------------
+// Risk output
+//------------------------------------------------------------------------------
+entryProxy = activeTop
+stopPrice = not na(entryProxy) ? entryProxy + stopATRMult * atr : na
+// Next shelf down: the highest cluster top still below the entry.
+float nextTarget = na
+if not na(entryProxy) and array.size(clTop) > 0
+    float bestTarget = na
+    for i = 0 to array.size(clTop) - 1
+        top = array.get(clTop, i)
+        if top < entryProxy and (na(bestTarget) or top > bestTarget)
+            bestTarget := top
+    nextTarget := bestTarget
+riskPerUnit = not na(stopPrice) and not na(entryProxy) ? stopPrice - entryProxy : na
+rewardPerUnit = not na(nextTarget) and not na(entryProxy) ? entryProxy - nextTarget : na
+rr = not na(riskPerUnit) and riskPerUnit > 0 and not na(rewardPerUnit) ? rewardPerUnit / riskPerUnit : na
+
+//------------------------------------------------------------------------------
+// Retest logic
+//------------------------------------------------------------------------------
+retestReady = not na(lastBroken) and not na(lastBrokenBar) and bar_index > lastBrokenBar
+retestCondition = retestReady and close >= lastBroken * (1.0 - clusterTolerancePct / 100.0)
+
+alertcondition(confirmedBreak, "Volume-confirmed close breakdown", "Volume-confirmed close breakdown")
+alertcondition(retestCondition, "Retest of broken support", "Retest of broken support")
+if confirmedBreak
+    alert(str.format("{0}: breakdown confirmed below {1} | confluence={2} | vol x{3}", syminfo.ticker, formatVal(breakRef), na(breakConf) ? "n/a" : str.tostring(breakConf), na(volRatio) ? "n/a" : str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+
+//------------------------------------------------------------------------------
+// Drawings
+//------------------------------------------------------------------------------
+var line[] drawLines = array.new_line()
+var label[] drawLabels = array.new_label()
+var box[] drawBoxes = array.new_box()
+
+clearDrawings() =>
+    while array.size(drawLines) > 0
+        line.delete(array.pop(drawLines))
+    while array.size(drawLabels) > 0
+        label.delete(array.pop(drawLabels))
+    while array.size(drawBoxes) > 0
+        box.delete(array.pop(drawBoxes))
+
+if barstate.islast
+    clearDrawings()
+
+    // Fibs
+    if showFibs
+        fibs = array.from(fib236, fib382, fib50, fib618, fib786)
+        fibNames = array.from("Fib 23.6%", "Fib 38.2%", "Fib 50%", "Fib 61.8%", "Fib 78.6%")
+        for i = 0 to array.size(fibs) - 1
+            lvl = array.get(fibs, i)
+            if not na(lvl) and lvl < close
+                ln = line.new(bar_index - 1, lvl, bar_index, lvl, extend=extend.right, color=color.new(fibColor, 40), style=line.style_dotted, width=1)
+                array.push(drawLines, ln)
+                lb = label.new(bar_index, lvl, array.get(fibNames, i) + " " + formatVal(lvl), style=label.style_label_left, textcolor=fibColor, color=color.new(color.black, 100), size=size.tiny)
+                array.push(drawLabels, lb)
+
+    // MAs
+    if showMAs
+        maVals = array.from(ema10, ema20, ema50, sma50, sma100, sma200)
+        maNames = array.from("EMA 10", "EMA 20", "EMA 50", "SMA 50", "SMA 100", "SMA 200")
+        for i = 0 to array.size(maVals) - 1
+            lvl = array.get(maVals, i)
+            if not na(lvl) and lvl < close
+                ln = line.new(bar_index - 1, lvl, bar_index, lvl, extend=extend.right, color=color.new(maColor, 50), width=1)
+                array.push(drawLines, ln)
+                lb = label.new(bar_index, lvl, array.get(maNames, i) + " " + formatVal(lvl), style=label.style_label_left, textcolor=maColor, color=color.new(color.black, 100), size=size.tiny)
+                array.push(drawLabels, lb)
+
+    // Primary cluster
+    if not na(activeTop) and not na(activeBot)
+        bx = box.new(bar_index - 1, activeTop, bar_index, activeBot, xloc=xloc.bar_index, bgcolor=color.new(primaryColor, 85), border_color=color.new(primaryColor, 20))
+        array.push(drawBoxes, bx)
+        ln = line.new(bar_index - 1, activeTop, bar_index, activeTop, extend=extend.right, color=primaryColor, width=2)
+        array.push(drawLines, ln)
+        lbTxt = str.format("{0} @ {1}", na(activeCnt) ? "n/a" : str.tostring(activeCnt), formatVal(activeTop))
+        if held
+            lbTxt += " (latched)"
+        lb = label.new(bar_index, activeTop, lbTxt, style=label.style_label_left, textcolor=primaryColor, color=color.new(color.black, 100), size=size.small)
+        array.push(drawLabels, lb)
+
+    // Secondary cluster
+    if showSecondary and not na(activeSecondaryTop) and not na(activeSecondaryBot)
+        bx2 = box.new(bar_index - 1, activeSecondaryTop, bar_index, activeSecondaryBot, xloc=xloc.bar_index, bgcolor=color.new(secondaryColor, 88), border_color=color.new(secondaryColor, 40))
+        array.push(drawBoxes, bx2)
+        ln2 = line.new(bar_index - 1, activeSecondaryTop, bar_index, activeSecondaryTop, extend=extend.right, color=color.new(secondaryColor, 20), width=1)
+        array.push(drawLines, ln2)
+        lb2 = label.new(bar_index, activeSecondaryTop, str.format("{0} @ {1}", na(activeSecondaryCnt) ? "n/a" : str.tostring(activeSecondaryCnt), formatVal(activeSecondaryTop)), style=label.style_label_left, textcolor=secondaryColor, color=color.new(color.black, 100), size=size.tiny)
+        array.push(drawLabels, lb2)
+
+    // Invalidation = most recent pivot high
+    if includePivots and array.size(pivotHighPrices) > 0
+        inv = array.get(pivotHighPrices, array.size(pivotHighPrices) - 1)
+        invBar = array.get(pivotHighBars, array.size(pivotHighBars) - 1)
+        invLn = line.new(invBar, inv, bar_index, inv, extend=extend.right, color=color.new(invalidationColor, 0), style=line.style_dashed, width=1)
+        array.push(drawLines, invLn)
+        invLb = label.new(bar_index, inv, "invalidation " + formatVal(inv), style=label.style_label_left, textcolor=invalidationColor, color=color.new(color.black, 100), size=size.tiny)
+        array.push(drawLabels, invLb)
+
+    // Retest zone
+    if showRetest and not na(lastBroken) and not na(lastBrokenBar)
+        rtLn = line.new(lastBrokenBar, lastBroken, bar_index, lastBroken, extend=extend.right, color=color.new(secondaryColor, 0), style=line.style_dashed, width=1)
+        array.push(drawLines, rtLn)
+        rtLb = label.new(bar_index, lastBroken, "retest " + formatVal(lastBroken), style=label.style_label_left, textcolor=secondaryColor, color=color.new(color.black, 100), size=size.tiny)
+        array.push(drawLabels, rtLb)
+
+//------------------------------------------------------------------------------
+// Table
+//------------------------------------------------------------------------------
+var table t = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 15), frame_color=color.new(color.gray, 55), frame_width=1)
+if showTable and barstate.islast
+    table.cell(t, 0, 0, "Trigger level", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 0, formatVal(activeTop) + (held ? " (latched)" : ""), text_color=primaryColor, text_size=size.small)
+
+    table.cell(t, 0, 1, "Confluence count", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 1, na(activeCnt) ? "n/a" : str.tostring(activeCnt), text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 2, "Secondary trigger", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 2, formatVal(activeSecondaryTop), text_color=secondaryColor, text_size=size.small)
+
+    table.cell(t, 0, 3, "Invalidation", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 3, formatVal(includePivots and array.size(pivotHighPrices) > 0 ? array.get(pivotHighPrices, array.size(pivotHighPrices) - 1) : na), text_color=invalidationColor, text_size=size.small)
+
+    table.cell(t, 0, 4, "Volume vs threshold", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 4, str.format("{0} / {1}", str.tostring(volume, format.volume), str.tostring(volAvg * volMult, format.volume)), text_color=volumeConfirmed ? color.lime : color.red, text_size=size.small)
+
+    table.cell(t, 0, 5, "Close quality", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 5, closeOK ? "pass" : "fail", text_color=closeOK ? color.lime : color.red, text_size=size.small)
+
+    table.cell(t, 0, 6, "Suggested stop", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 6, formatVal(stopPrice), text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 7, "Target", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 7, formatVal(nextTarget), text_color=color.white, text_size=size.small)
+
+    table.cell(t, 0, 8, "R:R", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 8, na(rr) ? "n/a" : str.tostring(rr, format.mintick), text_color=color.white, text_size=size.small)
+
+    breakTxt = confirmedBreak ? "yes" : lockEverFired ? "fired earlier" : "no"
+    breakCol = confirmedBreak ? color.lime : lockEverFired ? color.orange : color.red
+    table.cell(t, 0, 9, "Last bar break", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 9, breakTxt, text_color=breakCol, text_size=size.small)
+
+//------------------------------------------------------------------------------
+// Global barcolor
+//------------------------------------------------------------------------------
+barcolor(confirmedBreak ? color.new(primaryColor, 0) : na)
+
+// Lagged-reference assignment, below every read of prevTrigger / prevConfluence.
+// Both track the LIVE trigger, not the latched one: breakRef already selects the
+// frozen level while held, and keeping these live means unlatching resumes with
+// a correct one-bar lag instead of a stale frozen value.
+prevTrigger := triggerPrice
+prevConfluence := primaryCnt
