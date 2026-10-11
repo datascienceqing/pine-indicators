@@ -262,7 +262,15 @@ confluenceCount = primaryCount
 secondaryConfluence = secondaryCount
 
 // Breakout condition, evaluated at bar close.
-confirmedBreak = not na(triggerPrice) and close > triggerPrice and close[1] <= triggerPrice and volumeConfirmed
+//
+// Clusters are above price by construction, so a same-bar `close > triggerPrice`
+// is unsatisfiable and the signal could never fire. The reference is therefore the
+// PREVIOUS bar's trigger, held in prevTrigger and assigned at the very bottom of the
+// script, below every read. That trigger sat above the previous close, so the old
+// `close[1] <= triggerPrice` test is always true and is gone.
+var float prevTrigger = na
+var int prevConfluence = na
+confirmedBreak = not na(prevTrigger) and close > prevTrigger and volumeConfirmed
 
 // Highlight every bar that confirms a breakout. barcolor() is only permitted at
 // the top level of the script, so the condition lives in the argument.
@@ -274,7 +282,7 @@ barcolor(confirmedBreak ? color.new(color.lime, 0) : na)
 alertcondition(confirmedBreak, title="Volume-confirmed close breakout", message="Turn Confirmation Levels: volume-confirmed close breakout")
 
 if confirmedBreak and barstate.isconfirmed
-    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(triggerPrice), str.tostring(confluenceCount), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
+    alert(str.format("{0} breakout above {1} | confluence={2} | volume={3}x threshold", syminfo.ticker, f_fmt(prevTrigger), str.tostring(prevConfluence), str.tostring(volRatio, format.mintick)), alert.freq_once_per_bar_close)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Drawing
@@ -345,3 +353,7 @@ if barstate.islast
         table.cell(t, 1, 5, confirmedBreak ? "YES" : "no", text_color=confirmedBreak ? color.lime : color.white, text_size=size.tiny)
         table.cell(t, 0, 6, "Strong vol", text_color=color.white, text_size=size.tiny)
         table.cell(t, 1, 6, strongVolume ? "YES" : "no", text_color=strongVolume ? color.lime : color.white, text_size=size.tiny)
+
+// Lagged-reference assignment, below every read of prevTrigger / prevConfluence.
+prevTrigger := triggerPrice
+prevConfluence := confluenceCount

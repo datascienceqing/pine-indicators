@@ -10,9 +10,11 @@ Overlay indicator that builds confluence clusters from Fibonacci retracements of
 the dominant swing leg, a set of moving averages, and recent pivot highs/lows.
 The densest cluster above price becomes the **primary trigger**; the next
 densest becomes the **secondary trigger**. A breakout is reported only when the
-bar *closes* above the primary trigger and volume exceeds the configured
-multiple of its rolling average. The most recent pivot low is drawn as the
-invalidation level.
+bar *closes* above the primary trigger of the **previous** bar and volume exceeds
+the configured multiple of its rolling average. (The trigger of the same bar is
+always above that bar's close, because only levels above the close count, so it
+cannot be the reference.) The most recent pivot low is drawn as the invalidation
+level.
 
 **Inputs** are grouped into Leg/Fib, Moving Averages, Cluster/Trigger, Volume
 Filter, Display, and Colors.
@@ -27,7 +29,8 @@ Companion to the above, answering a different question. It does no banding at
 all: it lists every distinct level above the close in ascending order and
 reports the cumulative count of levels a move would clear on the way to each
 one. The highlighted trigger is the highest rung inside a configurable distance
-budget, so it clears the most levels available within that range.
+budget, so it clears the most levels available within that range. A breakout is
+a close above the previous bar's trigger, on the same volume filter.
 
 The two scripts can legitimately disagree. Turn Confirmation Levels optimises
 for the densest band; this one makes the distance-versus-levels-cleared
